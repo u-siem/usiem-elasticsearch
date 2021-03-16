@@ -1,0 +1,22 @@
+[package]
+name = "u-siem-elasticsearch"
+version = "0.0.3"
+authors = ["Samuel Garcés <samuel.garces@protonmail.com>"]
+license = "MIT"
+description = "uSIEM Elasticsearch Input/Output logging"
+repository = "https://github.com/u-siem/usiem-elasticsearch"
+keywords = ["SIEM", "security", "logs","syslog","dns"]
+categories = ["parsing"]
+edition = "2018"
+
+[lib]
+name = "usiem_elasticsearch"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+u-siem = {version = "0.0"}
+chrono = "0.4"
+reqwest = {version = "0.10.8", features = ["blocking"]}
+crossbeam-channel = { version = "0.5" }
