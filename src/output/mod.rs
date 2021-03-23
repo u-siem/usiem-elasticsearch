@@ -24,6 +24,7 @@ pub struct ElasticOuputConfig {
     pub elastic_address: String,
     /// ElasticSearch Data Stream to send logs to
     pub elastic_stream: String,
+    pub bearer_token : Option<String>,
 }
 
 /// Basic SIEM component for sending logs to ElasticSearch
@@ -177,11 +178,14 @@ impl SiemComponent for ElasticSearchOutput {
             }
             if err_cache > 0 {
                 bulking.push_str(&(format!("\n"))[..]);
-                match client
-                    .put(&elastic_url[..])
-                    .header("Content-Type", "application/json")
-                    .body(bulking)
-                    .send()
+                let mut req = client.put(&elastic_url[..]).header("Content-Type", "application/json");
+                match &config.bearer_token {
+                    Some(tkn) => {
+                        req = req.header("Authorization", format!("Bearer {}", tkn));
+                    },
+                    None => {}
+                };
+                match req .body(bulking).send()
                 {
                     Ok(resp) => {
                         println!("PUT Logs");

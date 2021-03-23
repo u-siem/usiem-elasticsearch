@@ -15,7 +15,8 @@ mod elastic_test {
             commit_time : 1,
             cache_size : 20,
             elastic_address : String::from("http://127.0.0.1:9200"),
-            elastic_stream : String::from("log-integration-test")
+            elastic_stream : String::from("log-integration-test"),
+            bearer_token : None
         };
         let (k_sender,_receiver) = crossbeam_channel::unbounded();
         let (log_sender_other,log_receiver) = crossbeam_channel::unbounded();
