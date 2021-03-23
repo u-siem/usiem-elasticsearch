@@ -206,7 +206,7 @@ impl SiemComponent for ElasticSearchOutput {
         self.conn = Some(conn);
     }
 
-    /// Capabilities and actions that can be performed by this component
+    /// Capabilities and actions that can be performed on this component
     fn capabilities(&self) -> SiemComponentCapabilities {
         let datasets = Vec::new();
         let mut commands = Vec::new();
@@ -214,7 +214,7 @@ impl SiemComponent for ElasticSearchOutput {
         let stop_component = CommandDefinition::new(SiemFunctionType::STOP_COMPONENT,Cow::Borrowed("Stop ElasticSearch Output") ,Cow::Borrowed("This allows stopping all ElasticSearch components.\nUse only when really needed, like mantaining ElasticSearch.") , UserRole::Administrator);
         commands.push(stop_component);
         let start_component = CommandDefinition::new(
-            SiemFunctionType::START_COMPONENT,
+            SiemFunctionType::START_COMPONENT,// Must be added by default by the KERNEL and only used by him
             Cow::Borrowed("Start ElasticSearch Output"),
             Cow::Borrowed("This allows sending logs to ElasticSearch."),
             UserRole::Administrator,
