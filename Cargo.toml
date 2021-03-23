@@ -1,6 +1,6 @@
 [package]
 name = "u-siem-elasticsearch"
-version = "0.0.3"
+version = "0.0.4"
 authors = ["Samuel Garcés <samuel.garces@protonmail.com>"]
 license = "MIT"
 description = "uSIEM Elasticsearch Input/Output logging"

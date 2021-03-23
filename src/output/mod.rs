@@ -1,27 +1,33 @@
-use usiem::components::SiemComponent;
-use usiem::components::common::{CommandDefinition, SiemMessage, SiemComponentStateStorage, SiemComponentCapabilities, SiemFunctionType, UserRole, SiemFunctionCall};
-use usiem::events::{SiemLog};
+use chrono::prelude::*;
+use crossbeam_channel::TryRecvError;
 use crossbeam_channel::{Receiver, Sender};
 use std::borrow::Cow;
 use std::boxed::Box;
-use crossbeam_channel::{TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use usiem::components::common::{
+    CommandDefinition, SiemComponentCapabilities, SiemComponentStateStorage, SiemFunctionCall,
+    SiemFunctionType, SiemMessage, UserRole,
+};
+use usiem::components::SiemComponent;
+use usiem::events::field::SiemField;
+use usiem::events::SiemLog;
 
 pub struct ElasticOuputConfig {
     /// Max. messages for each HTTP request
-    pub commit_max_messages : usize,
+    pub commit_max_messages: usize,
+    pub cache_size: usize,
     /// Timeout for communication
-    pub commit_timeout : i64,
+    pub commit_timeout: u64,
     /// Send logs every X milliseconds
-    pub commit_time : i64,
+    pub commit_time: u64,
     /// ElasticSearch URI where it's listening
     pub elastic_address: String,
     /// ElasticSearch Data Stream to send logs to
-    pub elastic_stream : String,
+    pub elastic_stream: String,
 }
 
 /// Basic SIEM component for sending logs to ElasticSearch
-/// 
+///
 pub struct ElasticSearchOutput {
     /// Send actions to the kernel
     kernel_sender: Sender<SiemMessage>,
@@ -31,11 +37,11 @@ pub struct ElasticSearchOutput {
     local_chnl_snd: Sender<SiemMessage>,
     /// Receive logs
     log_receiver: Receiver<SiemLog>,
-    conn : Option<Box<dyn SiemComponentStateStorage>>,
-    config : ElasticOuputConfig
+    conn: Option<Box<dyn SiemComponentStateStorage>>,
+    config: ElasticOuputConfig,
 }
 impl ElasticSearchOutput {
-    pub fn new(config : ElasticOuputConfig) -> ElasticSearchOutput {
+    pub fn new(config: ElasticOuputConfig) -> ElasticSearchOutput {
         let (kernel_sender, _receiver) = crossbeam_channel::bounded(1000);
         let (local_chnl_snd, local_chnl_rcv) = crossbeam_channel::unbounded();
         let (_sndr, log_receiver) = crossbeam_channel::unbounded();
@@ -45,21 +51,24 @@ impl ElasticSearchOutput {
             local_chnl_snd,
             log_receiver,
             config,
-            conn : None
-        }
+            conn: None,
+        };
+    }
+    pub fn register_schema(&mut self) {
+        //TODO: Store data schema to first create or update the StreamData in elasticsearch
     }
 }
 impl SiemComponent for ElasticSearchOutput {
-    fn name(&self) -> Cow<'static, str>{
+    fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("ElasticSearchOutput")
     }
     fn local_channel(&self) -> Sender<SiemMessage> {
         self.local_chnl_snd.clone()
     }
-    fn set_log_channel(&mut self, _sender : Sender<SiemLog>, receiver : Receiver<SiemLog>) {
+    fn set_log_channel(&mut self, _sender: Sender<SiemLog>, receiver: Receiver<SiemLog>) {
         self.log_receiver = receiver;
     }
-    fn set_kernel_sender(&mut self, sender : Sender<SiemMessage>) {
+    fn set_kernel_sender(&mut self, sender: Sender<SiemMessage>) {
         self.kernel_sender = sender;
     }
 
@@ -68,74 +77,128 @@ impl SiemComponent for ElasticSearchOutput {
         let receiver = self.local_chnl_rcv.clone();
         let log_receiver = self.log_receiver.clone();
 
-        let mut client = reqwest::blocking::Client::new();
-        let stream_index = &self.config.elastic_stream[..];
+        let client = reqwest::blocking::Client::new();
         let config = &self.config;
 
-        let elastic_url = format!("{}/_bulk",&self.config.elastic_address[..]);
+        let elastic_url = format!(
+            "{}/{}/_bulk",
+            &self.config.elastic_address[..],
+            &self.config.elastic_stream[..]
+        );
+        let max_commit = self.config.commit_max_messages;
+        let commit_time = Duration::from_millis(self.config.commit_time);
+        let mut log_cache = Vec::with_capacity(self.config.cache_size);
+        let mut last_commit = Instant::now();
         loop {
             loop {
                 let rcv_action = receiver.try_recv();
                 match rcv_action {
-                    Ok(msg) => {
-                        match msg {
-                            SiemMessage::Command(cmd) => {
-                                match cmd {
-                                    SiemFunctionCall::STOP_COMPONENT(_n) =>  {
-                                        return
-                                    },
-                                    _ => {}
-                                }
-                            },
+                    Ok(msg) => match msg {
+                        SiemMessage::Command(cmd) => match cmd {
+                            SiemFunctionCall::STOP_COMPONENT(_n) => return,
                             _ => {}
+                        },
+                        SiemMessage::Log(mut msg) => {
+                            let time = format!("{:?}", Utc.timestamp_millis(msg.event_created()));
+                            msg.add_field("@timestamp", SiemField::Text(Cow::Owned(time)));
+                            log_cache.push(msg);
+                            if log_cache.len() > max_commit || last_commit.elapsed() > commit_time {
+                                // TODO: Use coarsetime
+                                break;
+                            }
+                        }
+                        _ => {}
+                    },
+                    Err(e) => match e {
+                        TryRecvError::Empty => {
+                            break;
+                        }
+                        TryRecvError::Disconnected => {
+                            std::thread::sleep(Duration::from_millis(10));
                         }
                     },
-                    Err(e) => {
-                        match e {
-                            TryRecvError::Empty => {
+                }
+            }
+            let mut log_count = 0;
+            if log_cache.len() < max_commit {
+                loop {
+                    let rcv_action = log_receiver.try_recv();
+                    match rcv_action {
+                        Ok(mut msg) => {
+                            let time = format!("{:?}", Utc.timestamp_millis(msg.event_created()));
+                            msg.add_field("@timestamp", SiemField::Text(Cow::Owned(time)));
+                            log_cache.push(msg);
+                            if log_cache.len() > max_commit || last_commit.elapsed() > commit_time {
+                                // TODO: Use coarsetime
                                 break;
-                            },
-                            TryRecvError::Disconnected => {
-                                std::thread::sleep(Duration::from_millis(10));
+                            }
+                        }
+                        Err(e) => {
+                            match e {
+                                TryRecvError::Empty => {
+                                    //TODO: check time and quantity of logs
+                                    break;
+                                }
+                                TryRecvError::Disconnected => {
+                                    println!("Error???");
+                                    return;
+                                }
                             }
                         }
                     }
+                    if log_count >= config.commit_max_messages {
+                        break;
+                    }
+                    log_count += 1;
                 }
             }
-            let mut bulking : String = String::with_capacity(64_000);
-            let mut log_count = 0;
-            loop {
-                let rcv_action = log_receiver.try_recv();
-                match rcv_action {
-                    Ok(msg) => {
+            let mut bulking: String = String::with_capacity(64_000);
+            let mut err_cache = 0;
+            for i in 0..max_commit {
+                let msg = log_cache.get(i);
+                match msg {
+                    Some(msg) => {
+                        err_cache = i;
                         let stringify = serde_json::to_string(&msg);
                         match stringify {
                             Ok(content) => {
-                                bulking.push(format!("{{\"create\":{{\"_index\":\"{}\"}}}}\n{}\n",stream_index, content));
+                                let tmp = format!("{{\"create\":{{}}}}\n{}\n", content);
+                                bulking.push_str(&tmp[..]);
                             }
-                            Err(_) => {}
+                            Err(_) => {
+                                //Can't happen
+                            }
                         }
-                    },
-                    Err(e) => {
+                    }
+                    None => {
                         break;
                     }
                 }
-                if log_count >= config.commit_max_messages {
-                    break;
-                }
             }
-            bulking.push(format!("\n"));
-            match client.post(&elastic_url[..]).body(bulking).send() {
-                Ok(_) => {},
-                Err(_err) => {
-                    //TODO: retry policy
+            if err_cache > 0 {
+                bulking.push_str(&(format!("\n"))[..]);
+                match client
+                    .put(&elastic_url[..])
+                    .header("Content-Type", "application/json")
+                    .body(bulking)
+                    .send()
+                {
+                    Ok(resp) => {
+                        println!("PUT Logs");
+                        println!("{:?}", resp.text().unwrap());
+                        log_cache.drain(0..err_cache);
+                        last_commit = Instant::now();
+                    }
+                    Err(err) => {
+                        println!("{:?}", err);
+                    }
                 }
             }
         }
     }
 
     /// Allow to store information about this component like the state or conigurations.
-    fn set_storage(&mut self, conn : Box<dyn SiemComponentStateStorage>) {
+    fn set_storage(&mut self, conn: Box<dyn SiemComponentStateStorage>) {
         self.conn = Some(conn);
     }
 
@@ -146,8 +209,19 @@ impl SiemComponent for ElasticSearchOutput {
 
         let stop_component = CommandDefinition::new(SiemFunctionType::STOP_COMPONENT,Cow::Borrowed("Stop ElasticSearch Output") ,Cow::Borrowed("This allows stopping all ElasticSearch components.\nUse only when really needed, like mantaining ElasticSearch.") , UserRole::Administrator);
         commands.push(stop_component);
-        let start_component = CommandDefinition::new(SiemFunctionType::START_COMPONENT,Cow::Borrowed("Start ElasticSearch Output") ,Cow::Borrowed("This allows sending logs to ElasticSearch.") , UserRole::Administrator);
+        let start_component = CommandDefinition::new(
+            SiemFunctionType::START_COMPONENT,
+            Cow::Borrowed("Start ElasticSearch Output"),
+            Cow::Borrowed("This allows sending logs to ElasticSearch."),
+            UserRole::Administrator,
+        );
         commands.push(start_component);
-        SiemComponentCapabilities::new(Cow::Borrowed("ElasticSearchOutput"), Cow::Borrowed("Send logs to elasticsearch"), Cow::Borrowed(""), datasets, commands)
+        SiemComponentCapabilities::new(
+            Cow::Borrowed("ElasticSearchOutput"),
+            Cow::Borrowed("Send logs to elasticsearch"),
+            Cow::Borrowed(""),
+            datasets,
+            commands,
+        )
     }
 }
