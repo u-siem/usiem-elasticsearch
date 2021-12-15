@@ -118,7 +118,7 @@ impl SiemComponent for ElasticSearchOutput {
                             break;
                         }
                         TryRecvError::Disconnected => {
-                            std::thread::sleep(Duration::from_millis(10));
+                            return;
                         }
                     },
                 }
@@ -144,7 +144,6 @@ impl SiemComponent for ElasticSearchOutput {
                                     break;
                                 }
                                 TryRecvError::Disconnected => {
-                                    println!("Error???");
                                     return;
                                 }
                             }
@@ -157,12 +156,12 @@ impl SiemComponent for ElasticSearchOutput {
                 }
             }
             let mut bulking: String = String::with_capacity(64_000);
-            let mut err_cache = 0;
+            let mut err_cache = -1;
             for i in 0..max_commit {
                 let msg = log_cache.get(i);
                 match msg {
                     Some(msg) => {
-                        err_cache = i;
+                        err_cache = i as i64;
                         let stringify = serde_json::to_string(&msg);
                         match stringify {
                             Ok(content) => {
@@ -190,10 +189,8 @@ impl SiemComponent for ElasticSearchOutput {
                 };
                 match req .body(bulking).send()
                 {
-                    Ok(resp) => {
-                        println!("PUT Logs");
-                        println!("{:?}", resp.text().unwrap());
-                        log_cache.drain(0..err_cache);
+                    Ok(_) => {
+                        log_cache.drain(0..(err_cache as usize + 1));
                         last_commit = Instant::now();
                     }
                     Err(err) => {
