@@ -5,13 +5,14 @@ use std::borrow::Cow;
 use std::boxed::Box;
 use std::time::{Duration, Instant};
 use usiem::components::common::{
-    CommandDefinition, SiemComponentCapabilities, SiemComponentStateStorage, SiemFunctionCall,
+    CommandDefinition, SiemComponentCapabilities, SiemComponentStateStorage, SiemCommandCall,
     SiemFunctionType, SiemMessage, UserRole,
 };
 use usiem::components::SiemComponent;
 use usiem::events::field::SiemField;
 use usiem::events::SiemLog;
 
+#[derive(Clone)]
 pub struct ElasticOuputConfig {
     /// Max. messages for each HTTP request
     pub commit_max_messages: usize,
@@ -30,6 +31,7 @@ pub struct ElasticOuputConfig {
 /// Basic SIEM component for sending logs to ElasticSearch
 ///
 pub struct ElasticSearchOutput {
+    comp_id : u64,
     /// Send actions to the kernel
     kernel_sender: Sender<SiemMessage>,
     /// Receive actions from other components or the kernel
@@ -47,6 +49,7 @@ impl ElasticSearchOutput {
         let (local_chnl_snd, local_chnl_rcv) = crossbeam_channel::unbounded();
         let (_sndr, log_receiver) = crossbeam_channel::unbounded();
         return ElasticSearchOutput {
+            comp_id : 0,
             kernel_sender,
             local_chnl_rcv,
             local_chnl_snd,
@@ -60,8 +63,8 @@ impl ElasticSearchOutput {
     }
 }
 impl SiemComponent for ElasticSearchOutput {
-    fn name(&self) -> Cow<'static, str> {
-        Cow::Borrowed("ElasticSearchOutput")
+    fn name(&self) -> &str {
+        "ElasticSearchOutput"
     }
     fn local_channel(&self) -> Sender<SiemMessage> {
         self.local_chnl_snd.clone()
@@ -95,8 +98,8 @@ impl SiemComponent for ElasticSearchOutput {
                 let rcv_action = receiver.try_recv();
                 match rcv_action {
                     Ok(msg) => match msg {
-                        SiemMessage::Command(cmd) => match cmd {
-                            SiemFunctionCall::STOP_COMPONENT(_n) => return,
+                        SiemMessage::Command(_hdr,cmd) => match cmd {
+                            SiemCommandCall::STOP_COMPONENT(_n) => return,
                             _ => {}
                         },
                         SiemMessage::Log(mut msg) => {
@@ -226,6 +229,23 @@ impl SiemComponent for ElasticSearchOutput {
             Cow::Borrowed(""),
             datasets,
             commands,
+            vec![]
         )
+    }
+
+    fn set_id(&mut self, id: u64) {
+        self.comp_id = id;
+    }
+
+    fn duplicate(&self) -> Box<dyn SiemComponent> {
+        let mut comp = ElasticSearchOutput::new(self.config.clone());
+        comp.kernel_sender = self.kernel_sender.clone();
+        comp.log_receiver = self.log_receiver.clone();
+        comp.conn = self.conn.clone();
+        Box::from(comp)
+    }
+
+    fn set_datasets(&mut self, _datasets : Vec<usiem::components::dataset::SiemDataset>) {
+        // NO dataset needed
     }
 }

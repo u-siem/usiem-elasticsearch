@@ -2,7 +2,7 @@
 mod elastic_test {
     use usiem_elasticsearch::output::{ElasticSearchOutput, ElasticOuputConfig};
     use usiem::components::{SiemComponent};
-    use usiem::components::common::{SiemMessage, SiemFunctionCall};
+    use usiem::components::common::{SiemMessage, SiemCommandCall, SiemCommandHeader};
     use usiem::events::{SiemLog};
     use usiem::events::field::SiemIp;
     use std::thread;
@@ -35,7 +35,11 @@ mod elastic_test {
                 println!("Sended log {}",i);
             }
             thread::sleep(std::time::Duration::from_millis(1000));
-            component_channel.send(SiemMessage::Command(SiemFunctionCall::STOP_COMPONENT(Cow::Borrowed("Component for testing")))).unwrap();
+            component_channel.send(SiemMessage::Command(SiemCommandHeader{
+                comm_id : 0,
+                comp_id : 0,
+                user : String::from("None")
+            }, SiemCommandCall::STOP_COMPONENT(Cow::Borrowed("Component for testing")))).unwrap();
             println!("Ended sending logs");
         });
         es_output.run();
