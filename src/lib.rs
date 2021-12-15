@@ -19,15 +19,15 @@ mod elastic_test {
         let (log_sender_for_in,log_rec_for_in) = crossbeam_channel::unbounded();
         let (log_sender_for_out,log_rec_for_out) = crossbeam_channel::unbounded();
 
-        let mut es_in = ElasticSearchInput::new("127.0.0.1:9200".to_string());
+        let mut es_in = ElasticSearchInput::new("127.0.0.1:9200".to_string(), 1);
         es_in.set_kernel_sender(k_sender.clone());
         es_in.set_log_channel(log_sender_for_in.clone(), log_rec_for_in.clone());
 
         let config = ElasticOuputConfig {
-            commit_max_messages : 10,
+            commit_max_messages : 30,
             commit_timeout : 1,
             commit_time : 1,
-            cache_size : 20,
+            cache_size : 50,
             elastic_address : String::from("http://127.0.0.1:9200"),
             elastic_stream : String::from("log-integration-test"),
             bearer_token : None
@@ -47,7 +47,7 @@ mod elastic_test {
                 log_sender_for_out.send(log).unwrap();
                 println!("Sended log {}",i);
             }
-            thread::sleep(std::time::Duration::from_millis(2000));
+            thread::sleep(std::time::Duration::from_millis(3000));
             out_channel.send(SiemMessage::Command(SiemCommandHeader{
                 comm_id : 0,
                 comp_id : 0,
@@ -63,8 +63,11 @@ mod elastic_test {
         thread::spawn(move || {
             es_in.run();
         });
-        es_output.run();
-        thread::sleep(std::time::Duration::from_millis(1000));
+        thread::sleep(std::time::Duration::from_millis(100));
+        thread::spawn(move || {
+            es_output.run();
+        });
+        thread::sleep(std::time::Duration::from_millis(3000));
         let mut log_n = 0;
         loop {
             match log_rec_for_in.try_recv() {
@@ -80,7 +83,7 @@ mod elastic_test {
                     }
                     
                 },
-                Err(e) => break
+                Err(_e) => break
             };
         }
         assert_eq!(log_n, 100);

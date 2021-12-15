@@ -187,13 +187,15 @@ impl SiemComponent for ElasticSearchOutput {
                     },
                     None => {}
                 };
-                match req .body(bulking).send()
+                match req.body(bulking).timeout(std::time::Duration::from_millis(500)).send()
                 {
                     Ok(_) => {
                         log_cache.drain(0..(err_cache as usize + 1));
+                        println!("BULK {}", err_cache + 1);
                         last_commit = Instant::now();
                     }
                     Err(err) => {
+                        let _ = self.kernel_sender.send(SiemMessage::Notification(self.comp_id,Cow::Owned(err.to_string())));
                         println!("{:?}", err);
                     }
                 }

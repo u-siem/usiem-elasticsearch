@@ -1,10 +1,8 @@
 use chrono::prelude::*;
-use crossbeam_channel::TryRecvError;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use std::borrow::Cow;
 use std::boxed::Box;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use usiem::components::common::{
     CommandDefinition, SiemCommandCall, SiemComponentCapabilities, SiemComponentStateStorage,
     SiemFunctionType, SiemMessage, UserRole,
@@ -12,9 +10,9 @@ use usiem::components::common::{
 use usiem::components::SiemComponent;
 use usiem::events::field::{SiemField, SiemIp};
 use usiem::events::{SiemEvent, SiemLog};
-
 use tide::prelude::*;
 use tide::Request;
+
 pub struct ElasticSearchInput {
     comp_id: u64,
     /// Send actions to the kernel
@@ -27,6 +25,7 @@ pub struct ElasticSearchInput {
     log_sender: Sender<SiemLog>,
     conn: Option<Box<dyn SiemComponentStateStorage>>,
     listen_address: String,
+    n_threads : usize
 }
 
 impl SiemComponent for ElasticSearchInput {
@@ -47,11 +46,42 @@ impl SiemComponent for ElasticSearchInput {
     }
 
     fn run(&mut self) {
+        std::env::set_var("ASYNC_STD_THREAD_COUNT", self.n_threads.to_string());
+        std::env::set_var("ASYNC_STD_THREAD_NAME", self.name());
+        let receiver = self.local_chnl_rcv.clone();
+        let state = State::new(self.log_sender.clone());
+        let addr = self.listen_address.clone();
+        let jn = async_std::task::spawn(async move {
+            let _ = Self::tide_listening(state, &addr).await;
+        });
         async_std::task::block_on(async {
-            let state = State::new(self.log_sender.clone());
-            let addr = self.listen_address.clone();
-            let res = Self::tide_listening(state, &addr).await;
-        })
+            loop {
+                let rcv_action = receiver.try_recv();
+                match rcv_action {
+                    Ok(msg) => match msg {
+                        SiemMessage::Command(_hdr, cmd) => match cmd {
+                            SiemCommandCall::STOP_COMPONENT(_n) => {
+                                println!("Closing ElasticSearchInput");
+                                return
+                            },
+                            _ => {}
+                        },
+                        _ => {}
+                    },
+                    Err(e) => match e {
+                        TryRecvError::Empty => {
+                        },
+                        TryRecvError::Disconnected => {
+                            return;
+                        }
+                    },
+                }
+                async_std::task::yield_now().await;
+                async_std::task::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+        let _ = jn.cancel();
+        return
     }
 
     fn set_storage(&mut self, _conn: Box<dyn SiemComponentStateStorage>) {
@@ -86,7 +116,7 @@ impl SiemComponent for ElasticSearchInput {
     }
 
     fn duplicate(&self) -> Box<dyn SiemComponent> {
-        let mut comp = ElasticSearchInput::new(self.listen_address.clone());
+        let mut comp = ElasticSearchInput::new(self.listen_address.clone(), self.n_threads);
         comp.kernel_sender = self.kernel_sender.clone();
         comp.log_sender = self.log_sender.clone();
         comp.conn = self.conn.clone();
@@ -111,7 +141,8 @@ impl State {
 }
 
 impl ElasticSearchInput {
-    pub fn new(listen_address: String) -> ElasticSearchInput {
+    pub fn new(listen_address: String, threads : usize) -> ElasticSearchInput {
+        let threads = if threads == 0 {1} else {threads};
         let (kernel_sender, _receiver) = crossbeam_channel::bounded(1000);
         let (local_chnl_snd, local_chnl_rcv) = crossbeam_channel::unbounded();
         let (log_sender, _log_receiver) = crossbeam_channel::unbounded();
@@ -123,12 +154,12 @@ impl ElasticSearchInput {
             log_sender,
             conn: None,
             listen_address,
+            n_threads : threads
         };
     }
 
     async fn tide_listening(state: State, listening_address: &str) -> tide::Result<()> {
         let mut app = tide::with_state(state);
-
         app.at("/").get(es_metadata);
         app.at("/_license").post(es_license);
         app.at("/_xpack").post(es_xpack);
@@ -148,18 +179,16 @@ fn invalid_parameter(val: String) -> tide::Result {
 }
 
 async fn es_bulk(mut req: Request<State>) -> tide::Result {
-    
     let data = req.body_string().await?;
     let state = req.state();
     let stream = match req.param("stream") {
         Ok(stream) => stream.to_string(),
-        Err(_) => "default".to_string()
+        Err(_) => "default".to_string(),
     };
-    println!("BULK: {}", stream);
+    println!("Received bulk request from {} for {}", req.remote().unwrap_or("unknown"), stream);
     let utc: DateTime<Utc> = Utc::now();
     let mut logs_indexed = 0;
     let mut logs_failed = 0;
-    let mut index_name = "".to_owned();
     let mut action: Option<serde_json::Value> = None;
     let mut n_line = 0;
     let mut to_ret = Vec::with_capacity(1024);
@@ -251,7 +280,7 @@ async fn es_bulk(mut req: Request<State>) -> tide::Result {
             }
             None => {
                 if line.trim() == "" {
-                    continue
+                    continue;
                 }
                 let act: serde_json::Value = match serde_json::from_str(line) {
                     Ok(v) => v,
@@ -275,7 +304,7 @@ async fn es_bulk(mut req: Request<State>) -> tide::Result {
         n_line += 1;
     }
     let body = tide::Body::from_json(&json!({
-        "took" : 17,
+        "took" : logs_indexed,
         "errors" : logs_failed > 0,
         "items" : to_ret
     }));
@@ -345,7 +374,7 @@ async fn es_xpack(mut _req: Request<State>) -> tide::Result {
     }
 }
 
-async fn es_ilm_policy(mut req: Request<State>) -> tide::Result {
+async fn es_ilm_policy(req: Request<State>) -> tide::Result {
     let utc: DateTime<Utc> = Utc::now();
     let utc_s = format!("{:?}", utc);
     let policy = req.param("policy")?;
@@ -358,9 +387,7 @@ async fn es_ilm_policy(mut req: Request<State>) -> tide::Result {
     }
 }
 
-async fn es_cat_templates(mut req: Request<State>) -> tide::Result {
-    let utc: DateTime<Utc> = Utc::now();
-    let utc_s = format!("{:?}", utc);
+async fn es_cat_templates(req: Request<State>) -> tide::Result {
     let v = req.param("temp_id")?;
     let body = tide::Body::from_string(format!("{} [{}-*] 1  ", v, v));
     tide::Result::Ok(tide::Response::from(body))
