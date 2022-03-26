@@ -1,6 +1,6 @@
 [package]
 name = "u-siem-elasticsearch"
-version = "0.0.9"
+version = "0.0.10"
 authors = ["Samuel Garcés <samuel.garces@protonmail.com>"]
 license = "MIT"
 description = "uSIEM Elasticsearch Input/Output logging"
@@ -14,12 +14,8 @@ name = "usiem_elasticsearch"
 path = "src/lib.rs"
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0" }
 u-siem = {version = "0.0"}
-chrono = "0.4"
-reqwest = {version = "0.10.8", features = ["blocking"]}
-crossbeam-channel = { version = "0.5" }
-tide = "0.16.0"
-async-std = { version = "1.10.0" }
-fastrand = "1.5.0"
+reqwest = {version = "0.11", features = ["blocking"]}
+tide = "0.16"
+async-std = { version = "1.11" }
+fastrand = "1.7"

@@ -1,16 +1,17 @@
-use chrono::prelude::*;
-use crossbeam_channel::TryRecvError;
-use crossbeam_channel::{Receiver, Sender};
 use std::borrow::Cow;
 use std::boxed::Box;
 use std::time::{Duration, Instant};
+use usiem::chrono::prelude::*;
+use usiem::components::command::{CommandDefinition, SiemCommandCall, SiemFunctionType};
 use usiem::components::common::{
-    CommandDefinition, SiemComponentCapabilities, SiemComponentStateStorage, SiemCommandCall,
-    SiemFunctionType, SiemMessage, UserRole,
+    SiemComponentCapabilities, SiemComponentStateStorage, SiemMessage, UserRole,
 };
 use usiem::components::SiemComponent;
+use usiem::crossbeam_channel;
+use usiem::crossbeam_channel::{Receiver, Sender, TryRecvError};
 use usiem::events::field::SiemField;
 use usiem::events::SiemLog;
+use usiem::serde_json;
 
 #[derive(Clone)]
 pub struct ElasticOuputConfig {
@@ -25,13 +26,13 @@ pub struct ElasticOuputConfig {
     pub elastic_address: String,
     /// ElasticSearch Data Stream to send logs to
     pub elastic_stream: String,
-    pub bearer_token : Option<String>,
+    pub bearer_token: Option<String>,
 }
 
 /// Basic SIEM component for sending logs to ElasticSearch
 ///
 pub struct ElasticSearchOutput {
-    comp_id : u64,
+    comp_id: u64,
     /// Send actions to the kernel
     kernel_sender: Sender<SiemMessage>,
     /// Receive actions from other components or the kernel
@@ -49,7 +50,7 @@ impl ElasticSearchOutput {
         let (local_chnl_snd, local_chnl_rcv) = crossbeam_channel::unbounded();
         let (_sndr, log_receiver) = crossbeam_channel::unbounded();
         return ElasticSearchOutput {
-            comp_id : 0,
+            comp_id: 0,
             kernel_sender,
             local_chnl_rcv,
             local_chnl_snd,
@@ -98,7 +99,7 @@ impl SiemComponent for ElasticSearchOutput {
                 let rcv_action = receiver.try_recv();
                 match rcv_action {
                     Ok(msg) => match msg {
-                        SiemMessage::Command(_hdr,cmd) => match cmd {
+                        SiemMessage::Command(_hdr, cmd) => match cmd {
                             SiemCommandCall::STOP_COMPONENT(_n) => return,
                             _ => {}
                         },
@@ -180,14 +181,19 @@ impl SiemComponent for ElasticSearchOutput {
             }
             if err_cache > 0 {
                 bulking.push_str(&(format!("\n"))[..]);
-                let mut req = client.put(&elastic_url[..]).header("Content-Type", "application/json");
+                let mut req = client
+                    .put(&elastic_url[..])
+                    .header("Content-Type", "application/json");
                 match &config.bearer_token {
                     Some(tkn) => {
                         req = req.header("Authorization", format!("Bearer {}", tkn));
-                    },
+                    }
                     None => {}
                 };
-                match req.body(bulking).timeout(std::time::Duration::from_millis(500)).send()
+                match req
+                    .body(bulking)
+                    .timeout(std::time::Duration::from_millis(500))
+                    .send()
                 {
                     Ok(_) => {
                         log_cache.drain(0..(err_cache as usize + 1));
@@ -195,7 +201,10 @@ impl SiemComponent for ElasticSearchOutput {
                         last_commit = Instant::now();
                     }
                     Err(err) => {
-                        let _ = self.kernel_sender.send(SiemMessage::Notification(self.comp_id,Cow::Owned(err.to_string())));
+                        let _ = self.kernel_sender.send(SiemMessage::Notification(
+                            self.comp_id,
+                            Cow::Owned(err.to_string()),
+                        ));
                         println!("{:?}", err);
                     }
                 }
@@ -216,7 +225,7 @@ impl SiemComponent for ElasticSearchOutput {
         let stop_component = CommandDefinition::new(SiemFunctionType::STOP_COMPONENT,Cow::Borrowed("Stop ElasticSearch Output") ,Cow::Borrowed("This allows stopping all ElasticSearch components.\nUse only when really needed, like mantaining ElasticSearch.") , UserRole::Administrator);
         commands.push(stop_component);
         let start_component = CommandDefinition::new(
-            SiemFunctionType::START_COMPONENT,// Must be added by default by the KERNEL and only used by him
+            SiemFunctionType::START_COMPONENT, // Must be added by default by the KERNEL and only used by him
             Cow::Borrowed("Start ElasticSearch Output"),
             Cow::Borrowed("This allows sending logs to ElasticSearch."),
             UserRole::Administrator,
@@ -228,7 +237,8 @@ impl SiemComponent for ElasticSearchOutput {
             Cow::Borrowed(""),
             datasets,
             commands,
-            vec![]
+            vec![],
+            vec![],
         )
     }
 
@@ -244,7 +254,7 @@ impl SiemComponent for ElasticSearchOutput {
         Box::from(comp)
     }
 
-    fn set_datasets(&mut self, _datasets : Vec<usiem::components::dataset::SiemDataset>) {
+    fn set_datasets(&mut self, _datasets: Vec<usiem::components::dataset::SiemDataset>) {
         // NO dataset needed
     }
 }

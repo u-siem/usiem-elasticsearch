@@ -1,17 +1,19 @@
-use chrono::prelude::*;
-use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use std::borrow::Cow;
 use std::boxed::Box;
 use std::sync::Arc;
-use usiem::components::common::{
-    CommandDefinition, SiemCommandCall, SiemComponentCapabilities, SiemComponentStateStorage,
-    SiemFunctionType, SiemMessage, UserRole,
-};
-use usiem::components::SiemComponent;
-use usiem::events::field::{SiemField, SiemIp};
-use usiem::events::{SiemEvent, SiemLog};
 use tide::prelude::*;
 use tide::Request;
+use usiem::chrono::prelude::*;
+use usiem::components::command::{CommandDefinition, SiemCommandCall, SiemFunctionType};
+use usiem::components::common::{
+    SiemComponentCapabilities, SiemComponentStateStorage, SiemMessage, UserRole,
+};
+use usiem::components::SiemComponent;
+use usiem::crossbeam_channel;
+use usiem::crossbeam_channel::{Receiver, Sender, TryRecvError};
+use usiem::events::field::{SiemField};
+use usiem::events::{SiemEvent, SiemLog};
+use usiem::serde_json;
 
 pub struct ElasticSearchInput {
     comp_id: u64,
@@ -25,7 +27,7 @@ pub struct ElasticSearchInput {
     log_sender: Sender<SiemLog>,
     conn: Option<Box<dyn SiemComponentStateStorage>>,
     listen_address: String,
-    n_threads : usize
+    n_threads: usize,
 }
 
 impl SiemComponent for ElasticSearchInput {
@@ -62,15 +64,14 @@ impl SiemComponent for ElasticSearchInput {
                         SiemMessage::Command(_hdr, cmd) => match cmd {
                             SiemCommandCall::STOP_COMPONENT(_n) => {
                                 println!("Closing ElasticSearchInput");
-                                return
-                            },
+                                return;
+                            }
                             _ => {}
                         },
                         _ => {}
                     },
                     Err(e) => match e {
-                        TryRecvError::Empty => {
-                        },
+                        TryRecvError::Empty => {}
                         TryRecvError::Disconnected => {
                             return;
                         }
@@ -81,7 +82,7 @@ impl SiemComponent for ElasticSearchInput {
             }
         });
         let _ = jn.cancel();
-        return
+        return;
     }
 
     fn set_storage(&mut self, _conn: Box<dyn SiemComponentStateStorage>) {
@@ -107,6 +108,7 @@ impl SiemComponent for ElasticSearchInput {
             Cow::Borrowed(""),
             datasets,
             commands,
+            vec![],
             vec![],
         )
     }
@@ -141,8 +143,8 @@ impl State {
 }
 
 impl ElasticSearchInput {
-    pub fn new(listen_address: String, threads : usize) -> ElasticSearchInput {
-        let threads = if threads == 0 {1} else {threads};
+    pub fn new(listen_address: String, threads: usize) -> ElasticSearchInput {
+        let threads = if threads == 0 { 1 } else { threads };
         let (kernel_sender, _receiver) = crossbeam_channel::bounded(1000);
         let (local_chnl_snd, local_chnl_rcv) = crossbeam_channel::unbounded();
         let (log_sender, _log_receiver) = crossbeam_channel::unbounded();
@@ -154,7 +156,7 @@ impl ElasticSearchInput {
             log_sender,
             conn: None,
             listen_address,
-            n_threads : threads
+            n_threads: threads,
         };
     }
 
@@ -185,7 +187,11 @@ async fn es_bulk(mut req: Request<State>) -> tide::Result {
         Ok(stream) => stream.to_string(),
         Err(_) => "default".to_string(),
     };
-    println!("Received bulk request from {} for {}", req.remote().unwrap_or("unknown"), stream);
+    println!(
+        "Received bulk request from {} for {}",
+        req.remote().unwrap_or("unknown"),
+        stream
+    );
     let utc: DateTime<Utc> = Utc::now();
     let mut logs_indexed = 0;
     let mut logs_failed = 0;
@@ -214,22 +220,17 @@ async fn es_bulk(mut req: Request<State>) -> tide::Result {
                 };
 
                 //POST new data
-                let mut remote_addr = String::from("");
-                let remote_ip = match req.remote() {
-                    Some(remote) => match usiem::utilities::ip_utils::ipv4_from_str(remote) {
-                        Ok(ip) => SiemIp::V4(ip),
-                        Err(_) => {
-                            remote_addr = remote.to_string();
-                            SiemIp::V4(0)
-                        }
+                let remote_addr = match req.remote() {
+                    Some(remote) => {
+                        remote.to_string()
                     },
-                    None => SiemIp::V4(0),
+                    None => "unknown".to_string(),
                 };
 
                 match serde_json::from_str(line) {
                     Ok(json_content) => {
                         let mut log =
-                            SiemLog::new(line.to_string(), utc.timestamp_millis(), remote_ip);
+                            SiemLog::new(line.to_string(), utc.timestamp_millis(), remote_addr.clone());
                         log.add_field("host.address", SiemField::from_str(remote_addr));
                         log.add_field("elastic.index", SiemField::from_str(index_name.to_string()));
                         log.set_event(SiemEvent::Json(json_content));
